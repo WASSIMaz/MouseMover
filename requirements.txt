@@ -1,0 +1,22 @@
+# Full OS Agent v4 — Requirements
+# pip install -r requirements.txt
+# playwright install chromium
+# ollama pull moondream
+
+# Core
+uiautomation>=2.0.18
+google-generativeai>=0.8.0
+
+# Screen capture & vision
+mss>=9.0.1
+Pillow>=10.0.0
+requests>=2.31.0
+
+# Coordinate-based clicking (vision grounding)
+pyautogui>=0.9.54
+
+# Browser automation
+playwright>=1.40.0
+
+# System utilities
+psutil>=5.9.0
