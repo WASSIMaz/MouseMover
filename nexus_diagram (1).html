@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEXUS — Architecture</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #ffffff;
+  font-family: 'Times New Roman', Times, serif;
+  color: #000000;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── HEADER — minimal academic ── */
+#header {
+  padding: 10px 20px 8px;
+  border-bottom: 2px solid #000;
+  display: flex;
+  align-items: baseline;
+  gap: 20px;
+  flex-shrink: 0;
+}
+#header h1 {
+  font-size: 15px;
+  font-weight: bold;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+#header span {
+  font-size: 11px;
+  color: #555;
+  font-style: italic;
+}
+
+/* ── CANVAS ── */
+#canvas-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  background: #fff;
+}
+#canvas-wrap.grabbing { cursor: grabbing; }
+#canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+
+/* ── TOOLTIP ── */
+#tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: #fff;
+  border: 1px solid #000;
+  padding: 6px 10px;
+  font-family: 'Times New Roman', serif;
+  font-size: 11px;
+  max-width: 260px;
+  line-height: 1.5;
+  z-index: 200;
+  display: none;
+  white-space: normal;
+}
+
+/* ── ZOOM ── */
+#zoom-ctrl {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  display: flex;
+  gap: 4px;
+  z-index: 50;
+}
+.zoom-btn {
+  width: 26px; height: 26px;
+  border: 1px solid #000;
+  background: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Times New Roman', serif;
+}
+.zoom-btn:hover { background: #f0f0f0; }
+
+/* ── LEGEND ── */
+#legend {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  background: #fff;
+  border: 1px solid #000;
+  padding: 8px 12px;
+  font-family: 'Times New Roman', serif;
+  font-size: 10px;
+  z-index: 50;
+  line-height: 1.8;
+}
+#legend .leg-title {
+  font-weight: bold;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #000;
+  padding-bottom: 3px;
+}
+.leg-row { display: flex; align-items: center; gap: 8px; }
+.leg-line { width: 28px; height: 1px; background: #000; flex-shrink: 0; }
+.leg-line.dashed {
+  background: none;
+  border-top: 1px dashed #888;
+}
+.leg-line.thick { height: 2px; background: #000; }
+.leg-box { width: 14px; height: 10px; border: 1px solid #000; flex-shrink: 0; }
+.leg-box.filled { background: #e8e8e8; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>NEXUS — Agentic OS Architecture</h1>
+  <span>Fig. 1 — Complete component topology · scroll to zoom · drag to pan · hover to inspect</span>
+</div>
+
+<div id="canvas-wrap" id="canvas-wrap">
+  <svg id="canvas" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div id="tooltip"></div>
+  <div id="zoom-ctrl">
+    <button class="zoom-btn" id="btnZoomIn">+</button>
+    <button class="zoom-btn" id="btnZoomOut">−</button>
+    <button class="zoom-btn" id="btnFit" title="Fit" style="font-size:10px;width:36px">fit</button>
+  </div>
+  <div id="legend">
+    <div class="leg-title">Legend</div>
+    <div class="leg-row"><div class="leg-line thick"></div> Data / control flow</div>
+    <div class="leg-row"><div class="leg-line dashed"></div> Async / hook</div>
+    <div class="leg-row"><div class="leg-box"></div> Kernel boundary</div>
+    <div class="leg-row"><div class="leg-box filled"></div> Agent / external</div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// ARCHITECTURE DATA
+// ═══════════════════════════════════════════
+
+// Layer bands (y positions, heights, labels)
+const BANDS = [
+  { id: 'user',      label: 'USER INTERFACE BOUNDARY',         y: 20,   h: 70 },
+  { id: 'kernel',    label: 'COGNITIVE KERNEL — MONOLITHIC CORE', y: 110, h: 100 },
+  { id: 'bus',       label: 'SHARED MEMORY BUS',               y: 230,  h: 40 },
+  { id: 'typedbuf',  label: 'TYPED BUFFER (4 REGIONS)',        y: 290,  h: 40 },
+  { id: 'security',  label: 'SECURITY & RECOVERY LAYER',       y: 350,  h: 90 },
+  { id: 'agents',    label: 'AGENT SPACE',                     y: 460,  h: 90 },
+  { id: 'bg',        label: 'BACKGROUND COGNITIVE FLEET',      y: 570,  h: 80 },
+  { id: 'storage',   label: 'KNOWLEDGE STORE (3 TIERS)',       y: 670,  h: 70 },
+  { id: 'infra',     label: 'INFRASTRUCTURE',                  y: 760,  h: 70 },
+];
+
+// Total canvas width
+const CW = 1200;
+
+// Nodes
+const NODES = [
+  // USER BAND
+  { id:'user_goal',     label:'Goal Intake',          band:'user',     x:80,   y:35,  w:150, h:44,
+    desc:'Entry point for natural-language user goals. Signs intent with ECDSA-P256. Creates GoalResourceGroup (token_budget, step_budget, wall_clock_deadline) from PRIORS.md data.' },
+  { id:'intent',        label:'IntentAnchor\n(ECDSA-P256)',band:'user', x:260,  y:35,  w:150, h:44,
+    desc:'Cryptographic root of trust. Every sub-goal carries a ProvenanceChain hash-linked back to this signature. A forged or injected instruction cannot produce a valid chain.' },
+  { id:'calluser',      label:'CallUser( )',           band:'user',     x:440,  y:35,  w:150, h:44,
+    desc:'The sole human output surface. Routes scope escalation proposals, compensation plans from the Rollback Engine, and critical budget alerts. NEXUS never auto-executes compensating DESTRUCTIVE or NETWORK actions without approval here.' },
+  { id:'provenance',    label:'ProvenanceChain\n(Immutable Log)', band:'user', x:620, y:35, w:160, h:44,
+    desc:'Append-only immutable audit trail. Every enforcement event, scope escalation approval, policy decision, and action block is appended. Anchored by IntentAnchor ECDSA signature.' },
+
+  // KERNEL BAND
+  { id:'scheduler',     label:'Scheduler\n(2-Level Priority)', band:'kernel', x:40, y:130, w:160, h:60,
+    desc:'Manages per-resource-type dynamic queues (VISUAL, TEXT, EMBED, LOCAL). Level 1: absolute class ordering CRITICAL > PLANNING > EXECUTION > BG. Level 2: virtual inference time fairness within each class. Preemption = queue-position change only; in-flight HTTP calls complete.' },
+  { id:'graph',         label:'Graph Subsystem\n(DAG Engine)', band:'kernel', x:225, y:130, w:160, h:60,
+    desc:'Stores GoalDependencyGraph as strict DAG. O(N) unblocking scan on every TrajectoryEntry publication. critical_path_len annotation drives priority tie-breaking. GoalAlgebraValidator enforces completeness, no cycles, no redundancy, ProcessOrchestrator-as-sg_0.' },
+  { id:'statemgr',      label:'StateManager\n+ CPUWorkerPool', band:'kernel', x:410, y:130, w:160, h:60,
+    desc:'Non-blocking WorldModel construction. Dispatches snapshot build to CPUWorkerPool (low-priority OS threads). On completion: atomic pointer swap into COMPUTE_REGION. Main kernel thread never blocks on CPU work.' },
+  { id:'policy',        label:'PolicyDispatcher\n(Hot-swap)', band:'kernel', x:595, y:130, w:160, h:60,
+    desc:'Versioned Python policy modules (SchedulingPolicy, HealthPolicy, EnvelopePolicy). Hot-swappable via atomic pointer swap after version check + safety contract tests pass. Blocks dispatch if contract fails.' },
+  { id:'ctxmgr',        label:'ContextManager\n(ContextEnvelope)', band:'kernel', x:780, y:130, w:160, h:60,
+    desc:'Manages ContextEnvelope (5 zones: Anchor, Working, Recent History, Compressed History, Semantic Anchor) per active specialist agent in TypedBuffer MUTABLE_REGION. Owned by Kernel — agents cannot observe their own window fill. ContextEnvelope survives agent thread death; enables respawn with full context history.' },
+  { id:'envmon',        label:'EnvelopeMonitor\n(200ms)', band:'kernel', x:965, y:130, w:160, h:60,
+    desc:'Pure arithmetic timer thread. Computes progress_ratio and consumption_ratio every 200ms. Injects resource_status signal (COMFORTABLE → MONITOR → CONSERVATIVE → CRITICAL) into each agent ContextEnvelope. Escalates to CallUser() at CRITICAL.' },
+
+  // BUS BAND (single wide node)
+  { id:'bus',           label:'SharedMemoryBus — crossbeam lock-free pub/sub · synchronous in-thread delivery · causal attribution (goal_id_hash, agent_id_hash) on every ChangeEvent · async hook thread pool (2–3 threads, 1ms timeout)', band:'bus', x:20, y:242, w:CW-40, h:24,
+    desc:'Epistemic state bus, not a data pipe. Synchronous in-thread delivery gives causal ordering for free. Every ChangeEvent carries goal_id_hash + agent_id_hash — the mechanism by which Chronicler reasons causally about what happened. Hook thread pool ensures misbehaving subscribers cannot stall the publisher.' },
+
+  // TYPEDBUF BAND (single wide node)
+  { id:'typedbuf',      label:'TypedBuffer — IMMUTABLE (GoalContracts, ns) · APPEND_ONLY (TrajectoryEntries, ns) · MUTABLE (GoalDependencyGraphs + ContextEnvelopes, RWLock 500ms timeout) · COMPUTE_REGION (WorldModel atomic ptr swap, µs)', band:'typedbuf', x:20, y:302, w:CW-40, h:24,
+    desc:'Single pre-allocated shared memory region, zero-copy. IMMUTABLE: written once, read forever. MUTABLE: per-slot RWLock with 500ms timeout — on timeout, publish LOCK_TIMEOUT and retry next cycle (SP-1 stall elimination). COMPUTE_REGION: atomic pointer swap for WorldModel snapshots — readers never see partial state.' },
+
+  // SECURITY BAND
+  { id:'capbroker',     label:'CapabilityBroker\n(Single Seam)', band:'security', x:40, y:370, w:160, h:60,
+    desc:'The one and only serialization boundary between Kernel and Agent space. 6-step intercept: (1) Capability name check, (2) Schema validation, (3) ScopeEnforcer predicate, (4) Tool dispatch, (5) Result schema validation, (6) AuditLog write. Inside: native Python objects, zero-copy. Outside: msgpack bytes.' },
+  { id:'agentgate',     label:'AgentActionGate\n(2-Stage)',  band:'security', x:225, y:370, w:160, h:60,
+    desc:'Stage 1 (fast, <5ms): cosine similarity of action embedding vs. root intent embedding. Above threshold: pass silently. Stage 2 (triggered on anomaly, 50–200ms): local quantized 1–3B model entailment check. Deterministic — no LLM judges safety, cryptographic chain verification cannot be fooled.' },
+  { id:'rollback',      label:'Rollback & Recovery\n(ActionLedger)', band:'security', x:410, y:370, w:160, h:60,
+    desc:'Pre-execution world-state snapshots keyed by (goal_id, sub_goal_id, action_sequence_number) with TTL. ReversibilityClassifier: FULLY_REVERSIBLE (auto-undo) / PARTIALLY_REVERSIBLE / COMPENSATABLE / IRREVERSIBLE. CompensationPlanner: auto-rollback local ops only; structured CallUser() proposal for everything else.' },
+  { id:'argscope',      label:'ArgumentScope\nEnforcer',   band:'security', x:595, y:370, w:160, h:60,
+    desc:'Extends CapabilityConfinement from capability names to argument predicates. ArgumentScopeManifest: capability → predicate (path prefix, recipient set, endpoint list, command whitelist). Returns PERMITTED / SCOPE_VIOLATION / SCOPE_AMBIGUOUS. Scopes derived from GoalContract declared_workspace — non-overlapping by construction.' },
+  { id:'safemode',      label:'SafeModeGate\n+ AuditLog',  band:'security', x:780, y:370, w:160, h:60,
+    desc:'Risk classification before DESTRUCTIVE / NETWORK / irreversible actions. Configurable: require confirmation, demote to lower priority, or block. AuditLog: immutable append-only, every SEMANTIC_DRIFT event with untrusted_influence flag. Complete forensic record.' },
+  { id:'watchdogs',     label:'L1/L2/L3\nWatchdogs',      band:'security', x:965, y:370, w:160, h:60,
+    desc:'L1 (thread in PID A): monitors agent heartbeats, reads ContextEnvelope for respawn. L2 (thread in PID A): EnvelopeMonitor budget signals. L3 (separate OS process PID B, pure Rust): reads shared-memory atomic heartbeat, 3s timeout, 5-step SIGTERM→SIGKILL→restart recovery. Cannot be frozen by kernel stall.' },
+
+  // AGENTS BAND
+  { id:'prco',          label:'ProcessOrchestrator\n(Mandatory sg_0)', band:'agents', x:40, y:480, w:160, h:60,
+    desc:'Mandatory first sub-goal for every GUI decomposition. Verifies application readiness at OS level (psutil process state, socket readiness) not visual appearance. Guarantees UI-TARS preconditions before first screenshot. GoalAlgebraValidator rejects any decomposition missing ProcessOrchestrator as sg_0.' },
+  { id:'planner',       label:'Planner\n(GoalAlgebra)',   band:'agents', x:225, y:480, w:160, h:60,
+    desc:'Decomposes goal into annotated GoalDependencyGraph. Checks strategy files for HIGH-confidence cached decompositions first. Schema validator: completeness + no cycles + no redundancy + ProcessOrchestrator-as-sg_0. Publishes graph and terminates.' },
+  { id:'contextualizer',label:'Contextualizer\n(Hybrid Retrieval)',band:'agents',x:410,y:480,w:160,h:60,
+    desc:'Assembles GoalContract per sub-goal. Scoped hierarchy retrieval (most specific→general, stops at HIGH confidence): BM25 + vector similarity + temporal decay + MMR re-ranking. Capability ranking: numpy.dot vs. MachineProfile matrix. One LLM enrichment call with full dependency graph context.' },
+  { id:'uitars',        label:'UI-TARS\n(VLA Model)',     band:'agents', x:595, y:480, w:160, h:60,
+    desc:'Vision-Language-Action direct policy model. Maps (GoalContract, history, screenshot) → action. N=5 rolling window: sacred internal state, NEXUS never touches. Three Sacred Rules: NEXUS enriches before execution, then steps aside completely. Receives only resource_status updates mid-execution.' },
+  { id:'specialists',   label:'OS Specialists\n(Scoped)',  band:'agents', x:780, y:480, w:160, h:60,
+    desc:'FileSystem, ShellExecutor, DataExtractor, NetworkInspector, GoalScheduler, EmailAgent. Each carries ArgumentScopeManifest derived from GoalContract declared_workspace. ContextEnvelope managed by Kernel ContextManager for long-running tasks. All tool calls intercepted by CapabilityBroker.' },
+  { id:'ctxcomp',       label:'ContextCompressor\n(3-Level)',band:'agents', x:965, y:480, w:160, h:60,
+    desc:'L1: Semantic deduplication before adding to Recent History Zone (O(K) cosine). L2: Structured summarization — lossless fact extraction (paths, URLs, error codes, numbers) into facts buffer; narrative compressed. L3: Meta-compression of narrative arc only; facts buffer never touched. Adaptive ratio from remaining budget ÷ remaining steps.' },
+
+  // BG FLEET BAND
+  { id:'chronicler',    label:'Chronicler',             band:'bg', x:40,  y:590, w:140, h:50,
+    desc:'Spawned at BG priority after each goal completion via async Bus hook. LLM call: causal reasoning + priority tagging (🔴🟡🟢). Atomic fact extraction at write time. Contradiction check: 3 consecutive failures on same route → immediate Consolidator spawn. Appends to consequences/YYYY-MM-DD.md + warm-tier facts index.' },
+  { id:'consolidator',  label:'Consolidator',           band:'bg', x:205, y:590, w:140, h:50,
+    desc:'Threshold-triggered (10k tokens) or contradiction-triggered. Computes P(success | route, machine_context) from Consequence Records mathematically before any LLM involvement. LLM does only three things: identify causal vs. coincidental, write failure taxonomy, write route description. 40–60% compression to scoped strategy file hierarchy.' },
+  { id:'worldbuilder',  label:'WorldBuilder',           band:'bg', x:370, y:590, w:140, h:50,
+    desc:'Nightly BG cycle. Reads 30-day Consequence Records. Computes marginal statistics (not route-conditional) mathematically: resource distributions (mean, std, p50, p95, p99), reliability EMA, app behavior profiles. LLM receives fully-computed tables and writes PRIORS.md narrative. Numbers from formulas; words from LLM.' },
+  { id:'demonstrator',  label:'Demonstrator\n(TEACH_ME)', band:'bg', x:535, y:590, w:140, h:50,
+    desc:'TEACH_ME mode: records user demonstrations, derives parameterizable workflow, writes to MEMORY.md. Synthesizes new Tool Factory tools from trajectories. All synthesized tools undergo VM adversarial testing (QEMU pre-warmed snapshots) across multiple environment configs before promotion to live registry.' },
+  { id:'retrospec',     label:'RetrospectEngine\n(Session-close)', band:'bg', x:700, y:590, w:140, h:50,
+    desc:'Spawned once at session close. Cross-goal horizontal pattern analysis — looks for strategies that correlated with success regardless of intent class, failure signatures across goal types, user preference drift. Produces narrative pattern descriptions. Never modifies Consequence Records or PRIORS.md.' },
+  { id:'oraclefleet',   label:'EnvironmentOracle\n+ FleetMonitor', band:'bg', x:865, y:590, w:160, h:50,
+    desc:'EnvironmentOracle: 200ms hybrid poll (inotify/FSEvents for file events, psutil for process/resource). Every ChangeEvent tagged with goal_id_hash + agent_id_hash for causal attribution. FleetMonitor: monitors all active agent contexts every 500ms, file appearance via Oracle event subscription, cross-goal resource pressure detection.' },
+
+  // STORAGE BAND
+  { id:'hot',           label:'Hot Tier\n(TypedBuffer in-process)', band:'storage', x:40, y:685, w:200, h:45,
+    desc:'Nanosecond access. Holds: WorldModel (frozen dataclass, atomic ptr swap), MachineProfile capability matrix (numpy float32), ActionLedger index, MEMORY.md (frozen structure), active GoalDependencyGraph nodes, ContextEnvelope metadata, embedding_cache (DashMap), COMPUTE_REGION (hnsw_index, capability_matrix).' },
+  { id:'warm',          label:'Warm Tier\n(SQLite + sqlite-vec)', band:'storage', x:265, y:685, w:200, h:45,
+    desc:'Millisecond access. Holds: strategy files (BM25 FTS5 + sqlite-vec embeddings, EMA-scored, scoped hierarchy), atomic facts index (extracted at Chronicler write time), ActionLedger BLOBs (rollback snapshots, TTL-enforced), checkpoint_store, event_log_buffer (500ms batch flush), ContextEnvelope compressed histories.' },
+  { id:'cold',          label:'Cold Tier\n(Filesystem)', band:'storage', x:490, y:685, w:200, h:45,
+    desc:'Append-only permanent. Holds: consequences/YYYY-MM-DD.md, strategies/<scope>/app.md (atomic replace by Consolidator), PRIORS.md (atomic replace by WorldBuilder), MEMORY.md, rollback/ buffers with TTL. Append-only writes are lock-free. Deleting warm tier loses nothing — it rebuilds from cold tier.' },
+
+  // INFRA BAND
+  { id:'toolfact',      label:'Tool Factory\n(1 platform branch)', band:'infra', x:40, y:780, w:170, h:40,
+    desc:'sys.platform evaluated exactly once at boot. Generates platform-specific Python scripts from templates into locked DashMap registry. 3 paths: boot-time generation, on-demand (cost paid once, O(1) thereafter), synthesized tool ratification (VM testing + 3-attestation loop). ToolDescriptor carries side_effect_class driving ReversibilityClassifier.' },
+  { id:'llmgw',         label:'LLMGateway\n(Model Router)', band:'infra', x:235, y:780, w:170, h:40,
+    desc:'Single mandatory path for all LLM calls. UI-TARS receives all visual inputs exclusively. Text routing by capability registry: planning → strong reasoning; consolidation → strong summarization; compression → small efficient model (BG). Canary deployment via canary_weight field — atomic swap to 0.0 on regression.' },
+  { id:'vspool',        label:'VirtualSurfacePool\n(Xvfb warm-idle)', band:'infra', x:430, y:780, w:170, h:40,
+    desc:'Adaptive warm-idle pool: idle_target = EMA(peak_concurrent_agents) + safety_margin. Acquisition: microseconds (pointer pop from idle queue). Framebuffer access: mmap direct memory read <100µs. Input injection: uinput evdev structs <100µs (Linux), WDDM IDD + KMDF VHid (Windows), CGVirtualDisplay + IOHIDUserDevice (macOS).' },
+  { id:'embmodel',      label:'Resident Embedding\nModel (1 instance)', band:'infra', x:625, y:780, w:170, h:40,
+    desc:'Loaded once at boot, permanently warm in COMPUTE_REGION. Four uses: (1) warm-tier strategy retrieval, (2) MachineProfile app capability ranking, (3) AgentActionGate semantic consistency, (4) Chronicler contradiction detection. GPU→CoreML→ONNX→CPU fallback. embedding_cache DashMap: zero cost on repeated strings.' },
+];
+
+// Edges: from-id, to-id, label, dashed
+const EDGES = [
+  // User layer
+  { f:'user_goal',   t:'intent',        lb:'sign',         d:false },
+  { f:'intent',      t:'provenance',    lb:'anchor chain', d:false },
+  { f:'user_goal',   t:'scheduler',     lb:'goal dispatch',d:false },
+  { f:'intent',      t:'agentgate',     lb:'root intent embedding', d:false },
+
+  // Kernel coordination
+  { f:'scheduler',   t:'graph',         lb:'dispatch',     d:false },
+  { f:'graph',       t:'scheduler',     lb:'unblocked',    d:false },
+  { f:'statemgr',    t:'bus',           lb:'state events', d:false },
+  { f:'policy',      t:'scheduler',     lb:'policy',       d:false },
+  { f:'ctxmgr',      t:'ctxcomp',       lb:'80% trigger',  d:false },
+  { f:'envmon',      t:'ctxmgr',        lb:'resource_status', d:false },
+  { f:'envmon',      t:'calluser',      lb:'CRITICAL alert',d:false },
+
+  // Bus → subscribers
+  { f:'bus',         t:'graph',         lb:'TrajectoryEntry', d:false },
+  { f:'bus',         t:'statemgr',      lb:'ChangeEvents', d:false },
+  { f:'bus',         t:'chronicler',    lb:'AGENT_COMPLETION (async hook)', d:true },
+  { f:'bus',         t:'consolidator',  lb:'hook (async)', d:true },
+
+  // TypedBuffer ↔ components
+  { f:'typedbuf',    t:'ctxmgr',        lb:'read/write ContextEnvelope', d:false },
+  { f:'typedbuf',    t:'planner',       lb:'strategy cache', d:false },
+
+  // Security chain
+  { f:'capbroker',   t:'agentgate',     lb:'provenance verify', d:false },
+  { f:'capbroker',   t:'rollback',      lb:'pre-action snapshot', d:false },
+  { f:'capbroker',   t:'argscope',      lb:'step 3: scope check', d:false },
+  { f:'capbroker',   t:'safemode',      lb:'risk classify', d:false },
+  { f:'capbroker',   t:'toolfact',      lb:'dispatch',     d:false },
+  { f:'agentgate',   t:'provenance',    lb:'SEMANTIC_DRIFT log', d:false },
+  { f:'rollback',    t:'calluser',      lb:'compensation proposal', d:false },
+  { f:'rollback',    t:'warm',          lb:'ActionLedger BLOBs', d:false },
+  { f:'argscope',    t:'calluser',      lb:'ScopeEscalation', d:false },
+  { f:'argscope',    t:'provenance',    lb:'approval logged', d:false },
+
+  // Agents → CapabilityBroker
+  { f:'uitars',      t:'capbroker',     lb:'every tool call', d:false },
+  { f:'specialists', t:'capbroker',     lb:'every tool call', d:false },
+  { f:'prco',        t:'capbroker',     lb:'OS queries',   d:false },
+
+  // Agents → Bus
+  { f:'uitars',      t:'bus',           lb:'TrajectoryEntry', d:false },
+  { f:'specialists', t:'bus',           lb:'TrajectoryEntry', d:false },
+  { f:'planner',     t:'graph',         lb:'publish DAG',  d:false },
+  { f:'contextualizer',t:'typedbuf',    lb:'GoalContract', d:false },
+
+  // Scheduler spawns
+  { f:'scheduler',   t:'planner',       lb:'spawn PLANNING', d:false },
+  { f:'scheduler',   t:'contextualizer',lb:'spawn PLANNING', d:false },
+  { f:'scheduler',   t:'uitars',        lb:'spawn EXECUTION', d:false },
+  { f:'scheduler',   t:'specialists',   lb:'spawn EXECUTION', d:false },
+  { f:'scheduler',   t:'prco',          lb:'spawn (sg_0)', d:false },
+  { f:'scheduler',   t:'chronicler',    lb:'spawn BG', d:true },
+  { f:'scheduler',   t:'consolidator',  lb:'spawn BG', d:true },
+  { f:'scheduler',   t:'worldbuilder',  lb:'spawn BG', d:true },
+
+  // BG → storage
+  { f:'chronicler',  t:'warm',          lb:'atomic facts',  d:false },
+  { f:'chronicler',  t:'cold',          lb:'consequence record', d:false },
+  { f:'consolidator',t:'warm',          lb:'strategy files (EMA)', d:false },
+  { f:'consolidator',t:'cold',          lb:'strategy files', d:false },
+  { f:'worldbuilder',t:'cold',          lb:'PRIORS.md',    d:false },
+  { f:'worldbuilder',t:'hot',           lb:'capability vectors', d:false },
+  { f:'ctxcomp',     t:'chronicler',    lb:'"learned" facts', d:true },
+
+  // Contextualizer retrieval
+  { f:'contextualizer',t:'warm',        lb:'scoped retrieval', d:false },
+  { f:'contextualizer',t:'hot',         lb:'numpy.dot ranking', d:false },
+
+  // LLMGateway
+  { f:'llmgw',       t:'planner',       lb:'LLM response', d:false },
+  { f:'llmgw',       t:'contextualizer',lb:'enrichment',   d:false },
+  { f:'llmgw',       t:'uitars',        lb:'VLA response', d:false },
+  { f:'llmgw',       t:'specialists',   lb:'LLM response', d:false },
+  { f:'llmgw',       t:'ctxcomp',       lb:'compression (BG)', d:true },
+  { f:'planner',     t:'llmgw',         lb:'LLM call',     d:false },
+  { f:'contextualizer',t:'llmgw',       lb:'1 LLM call',   d:false },
+  { f:'uitars',      t:'llmgw',         lb:'VLA inference', d:false },
+
+  // Tool Factory
+  { f:'toolfact',    t:'vspool',        lb:'virtual display scripts', d:false },
+  { f:'toolfact',    t:'embmodel',      lb:'model load script', d:false },
+
+  // Oracle
+  { f:'oraclefleet', t:'bus',           lb:'ChangeEvents + causal attribution', d:false },
+  { f:'oraclefleet', t:'hot',           lb:'WorldModel update', d:false },
+
+  // Watchdogs
+  { f:'watchdogs',   t:'calluser',      lb:'CRITICAL / restart notify', d:false },
+  { f:'watchdogs',   t:'typedbuf',      lb:'read ContextEnvelope', d:false },
+  { f:'watchdogs',   t:'warm',          lb:'read checkpoint', d:false },
+];
+
+// ═══════════════════════════════════════════
+// RENDER ENGINE
+// ═══════════════════════════════════════════
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('canvas');
+const wrap = document.getElementById('canvas-wrap');
+const tooltip = document.getElementById('tooltip');
+
+let scale = 1, tx = 20, ty = 20;
+let isDragging = false, lastMX = 0, lastMY = 0;
+
+const nodeMap = {};
+NODES.forEach(n => nodeMap[n.id] = n);
+
+// Compute band actual y from band id
+const bandMap = {};
+BANDS.forEach(b => bandMap[b.id] = b);
+
+// Adjust node absolute y to be relative to document (band.y + node.y offset within band)
+NODES.forEach(n => {
+  const b = bandMap[n.band];
+  n.ay = b.y + (n.y - b.y);  // n.y is already absolute
+});
+
+// Total canvas height
+const totalH = BANDS[BANDS.length-1].y + BANDS[BANDS.length-1].h + 30;
+
+function makeSVGEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k,v));
+  return el;
+}
+
+function applyTransform() {
+  svg.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`);
+  svg.setAttribute('width', CW);
+  svg.setAttribute('height', totalH);
+}
+
+// ── Draw bands ──
+function drawBands() {
+  BANDS.forEach(b => {
+    // Band background — alternating very subtle grey
+    const rect = makeSVGEl('rect', {
+      x: 0, y: b.y, width: CW, height: b.h,
+      fill: (BANDS.indexOf(b) % 2 === 0) ? '#f7f7f7' : '#ffffff',
+      stroke: '#000', 'stroke-width': 0.5
+    });
+    svg.appendChild(rect);
+
+    // Band label (left side, rotated)
+    const lbl = makeSVGEl('text', {
+      x: 6, y: b.y + b.h/2,
+      'font-family': 'Times New Roman, serif',
+      'font-size': 8,
+      'font-weight': 'bold',
+      'letter-spacing': '0.12em',
+      'text-anchor': 'middle',
+      transform: `rotate(-90, 6, ${b.y + b.h/2})`,
+      fill: '#555'
+    });
+    lbl.textContent = b.label;
+    svg.appendChild(lbl);
+  });
+}
+
+// ── Draw edges ──
+function nodeCenter(id) {
+  const n = nodeMap[id];
+  if (!n) return null;
+  return { x: n.x + n.w/2, y: n.y + n.h/2 };
+}
+
+function drawEdges() {
+  // Arrow marker
+  const defs = makeSVGEl('defs', {});
+  const marker = makeSVGEl('marker', {
+    id: 'arrow', markerWidth: 6, markerHeight: 6,
+    refX: 5, refY: 3, orient: 'auto'
+  });
+  const arrowPath = makeSVGEl('path', {
+    d: 'M0,0 L0,6 L6,3 z',
+    fill: '#444'
+  });
+  marker.appendChild(arrowPath);
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
+  const markerDash = makeSVGEl('marker', {
+    id: 'arrow-dash', markerWidth: 6, markerHeight: 6,
+    refX: 5, refY: 3, orient: 'auto'
+  });
+  const arrowDashPath = makeSVGEl('path', {
+    d: 'M0,0 L0,6 L6,3 z',
+    fill: '#888'
+  });
+  markerDash.appendChild(arrowDashPath);
+  defs.appendChild(markerDash);
+
+  const edgeGroup = makeSVGEl('g', { id: 'edges' });
+
+  EDGES.forEach(e => {
+    const from = nodeMap[e.f];
+    const to   = nodeMap[e.t];
+    if (!from || !to) return;
+
+    const fx = from.x + from.w/2;
+    const fy = from.y + from.h/2;
+    const tx2 = to.x + to.w/2;
+    const ty2 = to.y + to.h/2;
+
+    // Find edge exit/entry points (box boundary)
+    const dx = tx2 - fx, dy = ty2 - fy;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < 1) return;
+    const nx = dx/dist, ny = dy/dist;
+
+    // Exit from source box
+    const scaleX = from.w/2 / Math.abs(nx || 0.001);
+    const scaleY = from.h/2 / Math.abs(ny || 0.001);
+    const s = Math.min(scaleX, scaleY) * 0.95;
+    const ex = fx + nx * s;
+    const ey = fy + ny * s;
+
+    // Entry to target box
+    const scaleX2 = to.w/2 / Math.abs(nx || 0.001);
+    const scaleY2 = to.h/2 / Math.abs(ny || 0.001);
+    const s2 = Math.min(scaleX2, scaleY2) * 0.95;
+    const enx = tx2 - nx * s2;
+    const eny = ty2 - ny * s2;
+
+    // Slight curve
+    const cx = (ex + enx)/2 - dy * 0.08;
+    const cy = (ey + eny)/2 + dx * 0.08;
+
+    const path = makeSVGEl('path', {
+      d: `M${ex},${ey} Q${cx},${cy} ${enx},${eny}`,
+      fill: 'none',
+      stroke: e.d ? '#999' : '#444',
+      'stroke-width': e.d ? 0.7 : 1,
+      'stroke-dasharray': e.d ? '4,3' : 'none',
+      'marker-end': e.d ? 'url(#arrow-dash)' : 'url(#arrow)',
+      opacity: 0.7
+    });
+    edgeGroup.appendChild(path);
+
+    // Edge label — only at midpoint for non-trivial labels
+    if (e.lb) {
+      const mx = (ex + enx)/2 - dy * 0.05;
+      const my = (ey + eny)/2 + dx * 0.05;
+      const angle = Math.atan2(eny - ey, enx - ex) * 180 / Math.PI;
+      const lbl = makeSVGEl('text', {
+        x: mx, y: my - 3,
+        'font-family': 'Times New Roman, serif',
+        'font-size': 7,
+        'text-anchor': 'middle',
+        fill: e.d ? '#aaa' : '#666',
+        transform: `rotate(${angle > 90 || angle < -90 ? angle + 180 : angle}, ${mx}, ${my})`,
+      });
+      lbl.textContent = e.lb;
+      edgeGroup.appendChild(lbl);
+    }
+  });
+
+  svg.appendChild(edgeGroup);
+}
+
+// ── Draw nodes ──
+function drawNodes() {
+  const nodeGroup = makeSVGEl('g', { id: 'nodes' });
+
+  NODES.forEach(n => {
+    // Determine style by band
+    const isBusTb = (n.band === 'bus' || n.band === 'typedbuf');
+    const isKernel = (n.band === 'kernel');
+    const isSecurity = (n.band === 'security');
+    const isStorage = (n.band === 'storage');
+    const isInfra = (n.band === 'infra');
+
+    let fillColor = '#fff';
+    let strokeColor = '#000';
+    let strokeW = 1;
+
+    if (isBusTb) { fillColor = '#e0e0e0'; strokeW = 1.5; }
+    else if (isKernel) { fillColor = '#fff'; strokeW = 1.5; }
+    else if (isSecurity) { fillColor = '#efefef'; }
+    else if (isStorage) { fillColor = '#f0f0f0'; strokeW = 0.8; }
+    else if (isInfra) { fillColor = '#f0f0f0'; strokeW = 0.8; }
+    else { fillColor = '#e8e8e8'; } // agents
+
+    const g = makeSVGEl('g', { class: 'node', 'data-id': n.id, style: 'cursor:default' });
+
+    const rect = makeSVGEl('rect', {
+      x: n.x, y: n.y, width: n.w, height: n.h,
+      rx: 2, ry: 2,
+      fill: fillColor,
+      stroke: strokeColor,
+      'stroke-width': strokeW
+    });
+    g.appendChild(rect);
+
+    // Label — multiline
+    const lines = n.label.split('\n');
+    const lineH = 11;
+    const totalTextH = lines.length * lineH;
+    const startY = n.y + n.h/2 - totalTextH/2 + 9;
+
+    lines.forEach((line, i) => {
+      const t = makeSVGEl('text', {
+        x: n.x + n.w/2,
+        y: startY + i * lineH,
+        'font-family': 'Times New Roman, serif',
+        'font-size': isBusTb ? 8 : 9,
+        'font-weight': (i === 0 && !isBusTb) ? 'bold' : 'normal',
+        'text-anchor': 'middle',
+        fill: '#000'
+      });
+      // Truncate long single-line bus text
+      const maxChars = isBusTb ? 200 : 30;
+      t.textContent = line.length > maxChars ? line.slice(0, maxChars) + '…' : line;
+      g.appendChild(t);
+    });
+
+    // Hover interaction
+    g.addEventListener('mouseenter', (evt) => {
+      rect.setAttribute('fill', '#fffde7');
+      rect.setAttribute('stroke-width', strokeW + 1);
+      showTooltip(n, evt);
+    });
+    g.addEventListener('mousemove', (evt) => {
+      positionTooltip(evt);
+    });
+    g.addEventListener('mouseleave', () => {
+      rect.setAttribute('fill', fillColor);
+      rect.setAttribute('stroke-width', strokeW);
+      hideTooltip();
+    });
+
+    nodeGroup.appendChild(g);
+  });
+
+  svg.appendChild(nodeGroup);
+}
+
+function showTooltip(n, evt) {
+  tooltip.innerHTML = `<strong style="font-size:11px">${n.label.replace('\n',' ')}</strong><br><span style="font-size:10px;color:#333">${n.desc}</span>`;
+  tooltip.style.display = 'block';
+  positionTooltip(evt);
+}
+
+function positionTooltip(evt) {
+  const wr = wrap.getBoundingClientRect();
+  let lx = evt.clientX - wr.left + 14;
+  let ly = evt.clientY - wr.top + 14;
+  const tw = 270;
+  if (lx + tw > wr.width - 10) lx = evt.clientX - wr.left - tw - 14;
+  tooltip.style.left = lx + 'px';
+  tooltip.style.top  = ly + 'px';
+}
+
+function hideTooltip() {
+  tooltip.style.display = 'none';
+}
+
+// ── Pan & Zoom ──
+const canvasEl = wrap.querySelector('#canvas');
+
+function setTransform() {
+  canvasEl.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
+  canvasEl.style.transformOrigin = '0 0';
+}
+
+wrap.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.91;
+  const wr = wrap.getBoundingClientRect();
+  const mx = e.clientX - wr.left;
+  const my = e.clientY - wr.top;
+  tx = mx - (mx - tx) * factor;
+  ty = my - (my - ty) * factor;
+  scale *= factor;
+  setTransform();
+}, { passive: false });
+
+wrap.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.node')) return;
+  isDragging = true;
+  lastMX = e.clientX; lastMY = e.clientY;
+  wrap.classList.add('grabbing');
+});
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  tx += e.clientX - lastMX;
+  ty += e.clientY - lastMY;
+  lastMX = e.clientX; lastMY = e.clientY;
+  setTransform();
+});
+window.addEventListener('mouseup', () => {
+  isDragging = false;
+  wrap.classList.remove('grabbing');
+});
+
+document.getElementById('btnZoomIn').onclick = () => { scale *= 1.15; setTransform(); };
+document.getElementById('btnZoomOut').onclick = () => { scale *= 0.87; setTransform(); };
+document.getElementById('btnFit').onclick = fitView;
+
+function fitView() {
+  const wr = wrap.getBoundingClientRect();
+  const scaleX = (wr.width - 40) / CW;
+  const scaleY = (wr.height - 40) / totalH;
+  scale = Math.min(scaleX, scaleY);
+  tx = (wr.width - CW * scale) / 2;
+  ty = 10;
+  setTransform();
+}
+
+// ── Build diagram ──
+// Set SVG intrinsic size large (panned via CSS transform)
+svg.setAttribute('width', CW);
+svg.setAttribute('height', totalH);
+svg.style.position = 'absolute';
+svg.style.top = '0';
+svg.style.left = '0';
+
+drawBands();
+drawEdges();
+drawNodes();
+
+// Initial fit
+setTimeout(fitView, 50);
+</script>
+</body>
+</html>
